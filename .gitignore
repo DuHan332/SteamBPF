@@ -1,0 +1,17 @@
+# Generated build files and executable distributions.
+/[Bb]uild/
+/dist/
+/dist-gui/
+/*.zip
+
+# Local packaging dependencies; restore using requirements-build.txt.
+/packaging/build-tools/
+
+# Python bytecode and local environments.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local build logs.
+/*-build.log
