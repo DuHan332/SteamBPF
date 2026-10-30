@@ -27,11 +27,10 @@ def create_window():
         for x,y,dx,dy in [(x1,y1,1,1),(x2,y1,-1,1),(x1,y2,1,-1),(x2,y2,-1,-1)]:
             line(x,y,x+dx*10,y,MUTED);line(x,y,x,y+dy*10,MUTED)
     text(28,30,'BPF',20,CYAN)
-    text(110,25,'SteamBPF  /  LOCAL CONTROL',13)
     c.create_rectangle(612,17,732,48,fill=PANEL,outline=EDGE,tags='language')
     language_label=text(672,32,'中文  /  EN',10,CYAN,anchor='center',tags='language')
     line(28,67,732,67)
-    text(28,93,'本地控制台',23,TEXT,font='Microsoft YaHei')
+    text(28,93,'SteamBPF',23,TEXT,font='Consolas')
     panel(28,128,444,404);panel(460,128,732,404)
     text(48,151,'01   操作控制',10,MUTED)
     text(48,174,'一键执行 · 自动刷新',10,TEXT,font='Microsoft YaHei')
@@ -64,8 +63,6 @@ def create_window():
         c.create_rectangle(x,466,x+12,478,fill='#23313d',outline='',tags='track')
     bars=[c.create_rectangle(48+i*16.6,466,60+i*16.6,478,fill=CYAN,outline='',state='hidden') for i in range(40)]
     translations = {
-        'SteamBPF  /  LOCAL CONTROL': ('SteamBPF  /  本地控制', 'SteamBPF  /  LOCAL CONTROL'),
-        '本地控制台': ('本地控制台', 'Local console'),
         '01   操作控制': ('01   操作控制', '01   CONTROL'),
         '一键执行 · 自动刷新': ('一键执行 · 自动刷新', 'One click / automatic refresh'),
         '执 行': ('执 行', 'RUN'),
