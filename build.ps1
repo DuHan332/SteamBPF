@@ -12,7 +12,8 @@ Push-Location $projectRoot
 try {
     $env:PYTHONPATH = Join-Path $projectRoot 'packaging\build-tools'
     $env:PYINSTALLER_CONFIG_DIR = Join-Path $projectRoot 'build\cache'
-    & $PythonExe -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name SteamBPF --distpath dist --workpath build\work --specpath build steambpf_gui.py
+    $appIcon = Join-Path $projectRoot 'assets\steambpf.ico'
+    & $PythonExe -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name SteamBPF --icon $appIcon --add-data "$appIcon;assets" --distpath dist --workpath build\work --specpath build steambpf_gui.py
     if ($LASTEXITCODE -ne 0) { throw 'Packaging failed.' }
     Write-Host "Built: $(Join-Path $projectRoot 'dist\SteamBPF.exe')"
 }

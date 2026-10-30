@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 import steambpf
 
 BG='#0b1016'; PANEL='#101923'; EDGE='#263645'; TEXT='#d9e5ef'; MUTED='#728899'; CYAN='#62ddd2'; AMBER='#f7b955'; RED='#e94d44'
@@ -12,6 +13,7 @@ BG='#0b1016'; PANEL='#101923'; EDGE='#263645'; TEXT='#d9e5ef'; MUTED='#728899'; 
 def create_window():
     root=tk.Tk()
     root.title('SteamBPF')
+    root.iconbitmap(str(Path(__file__).resolve().parent / 'assets' / 'steambpf.ico'))
     root.geometry('760x540')
     root.resizable(False,False)
     root.configure(bg=BG)

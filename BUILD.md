@@ -34,5 +34,8 @@ Output: `dist/SteamBPF.exe`. The executable uses a windowed interface and reques
 - `steambpf_gui.py`: graphical interface and translations.
 - `packaging/build-tools/`: PyInstaller and dependencies.
 - `build.ps1`: packaging script.
+- `assets/steambpf.ico`: executable and window icon.
+
+To regenerate the icon, install Pillow and run `python packaging/create_icon.py`. Pillow is not required to package the existing icon.
 
 Build intermediates and caches are generated in `build/` and can be recreated. A different Python version or machine may require compatible packaging dependencies to be reinstalled. The original executable and reverse-engineering artifacts are not needed for packaging.
