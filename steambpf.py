@@ -1,4 +1,4 @@
-"""Local-only Steam memory patch recreation. No key/token extraction or cloud sync."""
+"""Local SteamBPF module controller with an explicit legacy patch backend."""
 import argparse
 import ctypes as C
 from ctypes import wintypes as W
@@ -6,6 +6,7 @@ import os
 import re
 import struct
 import time
+import steambpf_accounts as accounts
 
 # The original enables these two rules. Its third rule is present but disabled.
 RULES = [
@@ -14,6 +15,19 @@ RULES = [
     ('branch_2', '44 39 60 20 0F 8E ?? ?? ?? ?? 48 89 BC 24',
      '44 39 60 20 E9 ?? ?? ?? ?? 90 48 89 BC 24', 4),
 ]
+
+# The newer artifact supplies a longer context for the first shared check.
+EXTENDED_BRANCH = (
+    '45 8B 75 18 49 63 CE 41 83 FE FF 74 09 48 6B D1 38 49 03 D0 EB 03 '
+    '49 8B D5 83 3A FF 74 1A 41 83 FE FF 74 0C 48 6B C9 38 49 03 C8 '
+    '44 8B 31 EB D4 49 8B CD 44 8B 31 EB CC 41 83 FE FF ')
+SILENT_CONTEXT = (
+    '41 80 7C 24 03 02 75 07 41 8B 44 24 04 EB 09 41 8B 04 24 '
+    '25 FF FF FF 00 3D 73 16 03 00 0F 84 ?? ?? ?? ?? ')
+SILENT_ORIGINAL = SILENT_CONTEXT + '41 83 BF CC 02 00 00 00 0F 85 ?? ?? ?? ??'
+SILENT_PATCHED = SILENT_CONTEXT + 'E9 ?? ?? ?? ?? 90 90 90 90 90 90 90 90 90'
+SILENT_OFFSET = 35
+SILENT_COMPARE = bytes.fromhex('41 83 BF CC 02 00 00 00 0F 85')
 
 def matches(data, pattern):
     parts = pattern.split()
@@ -25,6 +39,111 @@ def replacement(original):
         raise ValueError('Unexpected branch bytes')
     displacement = struct.unpack('<i', original[2:])[0] + 1
     return b'\xe9' + struct.pack('<i', displacement) + b'\x90'
+
+def silent_replacement(original):
+    """Force the same destination as the artifact's all-games silent path."""
+    if len(original) != 14 or not original.startswith(SILENT_COMPARE):
+        raise ValueError('Unexpected silent branch bytes')
+    displacement = struct.unpack('<i', original[10:])[0] + 9
+    return b'\xe9' + struct.pack('<i', displacement) + b'\x90' * 9
+
+def silent_original(patched):
+    """Restore only the recognizable direct branch format emitted by this tool."""
+    if len(patched) != 14 or patched[0] != 0xe9 or patched[5:] != b'\x90' * 9:
+        raise ValueError('Unsupported silent patch; restart Steam before retrying')
+    return SILENT_COMPARE + struct.pack('<i', struct.unpack('<i', patched[1:5])[0] - 9)
+
+def plan_patches(sections, silent=False):
+    """Validate every required signature before returning any memory writes."""
+    plan = []
+    for index, (name, original, patched, offset) in enumerate(RULES):
+        variants = [(original, patched, offset)]
+        if index == 0:
+            variants.append((EXTENDED_BRANCH + '0F 84 ?? ?? ?? ??',
+                             EXTENDED_BRANCH + 'E9 ?? ?? ?? ?? 90', 60))
+        hits = {}
+        for old, new, branch_offset in variants:
+            for address, data in sections:
+                for p in matches(data, old):
+                    hits[address+p+branch_offset] = (data[p+branch_offset:p+branch_offset+6], False)
+                for p in matches(data, new):
+                    hits[address+p+branch_offset] = (None, True)
+        if len(hits) != 1:
+            raise RuntimeError('%s: expected exactly one match, got %d; no writes started.' % (name, len(hits)))
+        address, (before, done) = next(iter(hits.items()))
+        if not done: plan.append((address, before, replacement(before)))
+    hits = []
+    for address, data in sections:
+        for pattern, done in ((SILENT_ORIGINAL, False), (SILENT_PATCHED, True)):
+            for p in matches(data, pattern):
+                where = address+p+SILENT_OFFSET
+                before = data[p+SILENT_OFFSET:p+SILENT_OFFSET+14]
+                displacement = struct.unpack('<i', before[1:5] if done else before[10:])[0]
+                destination = where + (5 if done else 14) + displacement
+                # Reject another tool's external trampoline instead of overwriting it.
+                if not any(start <= destination < start+len(code) for start, code in sections):
+                    raise RuntimeError('Unsupported silent patch destination; restart Steam before retrying')
+                hits.append((where, before, done))
+    if len(hits) > 1 or silent and len(hits) != 1:
+        raise RuntimeError('silent branch: expected exactly one match, got %d; no writes started.' % len(hits))
+    for where, before, done in hits:
+        if silent != done:
+            plan.append((where, before, silent_replacement(before) if silent else silent_original(before)))
+    return plan
+
+def prepare_patch_plan(win, handle, sections, module_base, silent=False, selected=None, apply=False):
+    """Validate known hooks, then prepare a new account block before publishing it."""
+    sites = []
+    for start, data in sections:
+        for pattern in (SILENT_ORIGINAL, SILENT_PATCHED):
+            for offset in matches(data,pattern):
+                sites.append((start+offset+SILENT_OFFSET,data[offset+SILENT_OFFSET:offset+SILENT_OFFSET+14]))
+    if len(sites) > 1 or selected is not None and len(sites) != 1:
+        raise RuntimeError('silent branch: expected exactly one match; no writes started')
+    if not sites:return plan_patches(sections,silent=silent),[],None
+    site,before = sites[0]
+    saved_account = None
+    original = before
+    def in_code(address):return any(start<=address<start+len(data) for start,data in sections)
+    if before[0] == 0xe9:
+        destination = site+5+struct.unpack('<i',before[1:5])[0]
+        if in_code(destination):original = silent_original(before)
+        else:
+            allocation = destination-accounts.HEADER.size
+            try:
+                blob = win.read(handle,allocation,accounts.BLOCK_SIZE)
+                original,saved_account = accounts.inspect_block(blob,site,module_base,allocation)
+            except (ValueError,OSError,OverflowError) as error:
+                raise RuntimeError('Unsupported silent patch; restart Steam before retrying') from error
+    if not in_code(site+14+struct.unpack('<i',original[10:])[0]):
+        raise RuntimeError('Unsupported silent patch destination; restart Steam before retrying')
+    normalized = []
+    for start,data in sections:
+        if start<=site<start+len(data):
+            offset = site-start
+            data = data[:offset]+original+data[offset+14:]
+        normalized.append((start,data))
+    plan = [item for item in plan_patches(normalized,silent=silent or selected is not None) if item[0]!=site]
+    allocations = []
+    if selected is not None:
+        selected = accounts.account_id(selected)
+        if saved_account == selected:desired = before
+        elif not apply:return plan,[],site
+        else:
+            allocation = win.allocate_near(handle,site,accounts.BLOCK_SIZE)
+            try:
+                blob = accounts.filter_block(site,module_base,allocation,original,selected)
+                win.write(handle,allocation,blob)
+                if win.read(handle,allocation,len(blob))!=blob:raise RuntimeError('Account block verification failed')
+                win.seal(handle,allocation,len(blob))
+                desired = b'\xe9'+struct.pack('<i',allocation+accounts.HEADER.size-site-5)+b'\x90'*9
+            except Exception:
+                win.free(handle,allocation)
+                raise
+            allocations.append(allocation)
+    else:desired = silent_replacement(original) if silent else original
+    if desired != before:plan.append((site,before,desired))
+    return plan,allocations,site
 
 class PROCESSENTRY32W(C.Structure):
     _fields_ = [('dwSize', W.DWORD), ('cntUsage', W.DWORD), ('th32ProcessID', W.DWORD),
@@ -63,6 +182,37 @@ class Windows:
         self.protect = api(self.k, 'VirtualProtectEx', W.BOOL,
                            [W.HANDLE, C.c_void_p, C.c_size_t, W.DWORD, C.POINTER(W.DWORD)])
         self.flush = api(self.k, 'FlushInstructionCache', W.BOOL, [W.HANDLE, C.c_void_p, C.c_size_t])
+        self.alloc = api(self.k,'VirtualAllocEx',C.c_void_p,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD,W.DWORD])
+        self.release = api(self.k,'VirtualFreeEx',W.BOOL,[W.HANDLE,C.c_void_p,C.c_size_t,W.DWORD])
+
+    def process_ids(self, executable='steam.exe'):
+        snap = self.snapshot(2,0)
+        if snap == C.c_void_p(-1).value:raise C.WinError(C.get_last_error())
+        result = []
+        try:
+            row = PROCESSENTRY32W();row.dwSize = C.sizeof(row)
+            ok = self.pfirst(snap,C.byref(row))
+            while ok:
+                if row.szExeFile.lower()==executable.lower():result.append(row.th32ProcessID)
+                ok = self.pnext(snap,C.byref(row))
+        finally:self.close(snap)
+        return result
+
+    def allocate_near(self,handle,site,size):
+        anchor = site & ~0xffff
+        for distance in range(0x10000,0x70000000,0x100000):
+            for candidate in (anchor+distance,anchor-distance):
+                if candidate<0x10000:continue
+                address = self.alloc(handle,candidate,size,0x3000,0x04)
+                if address:return address
+        raise RuntimeError('Cannot allocate nearby account-filter memory')
+
+    def free(self,handle,address):
+        if not self.release(handle,address,0,0x8000):raise C.WinError(C.get_last_error())
+
+    def seal(self,handle,address,size):
+        old = W.DWORD()
+        if not self.protect(handle,address,size,0x20,C.byref(old)):raise C.WinError(C.get_last_error())
 
     def find(self, pid=None):
         snap = self.snapshot(2, 0)
@@ -200,50 +350,56 @@ def refresh(pid, mode, progress=None):
         else:
             raise RuntimeError('No TCP disconnect succeeded. ' + detail + ' Reconnect commands were still sent; check connection states and elevation.')
 
-def main(argv=None, progress=None):
+def legacy_main(argv=None, progress=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true', help='Apply memory changes; default is read-only scan')
     parser.add_argument('--refresh', choices=['none', 'uri', 'tcp'], default='none')
     parser.add_argument('--pid', type=int)
+    parser.add_argument('--silent', action='store_true', help='Enable the all-games silent-start path')
+    parser.add_argument('--account', type=accounts.account_id, help='Keep this AccountID/SteamID64 on its original path; silence other owners')
+    parser.add_argument('--cold-start', action='store_true', help='Gracefully restart Steam, then patch as soon as its client module loads')
     args = parser.parse_args(argv)
     if os.name != 'nt' or C.sizeof(C.c_void_p) != 8:
         parser.error('Requires Windows and 64-bit Python')
     if args.refresh != 'none' and not args.apply:
         parser.error('--refresh requires --apply')
+    if args.account is not None and args.silent:parser.error('--account and --silent are mutually exclusive')
+    if args.cold_start and (not args.apply or args.pid is not None):parser.error('--cold-start requires --apply and cannot use --pid')
     if progress: progress(5)
-    win = Windows(); pid, base, size = win.find(args.pid)
+    win = Windows()
+    if args.cold_start:
+        from steambpf_startup import cold_start
+        try:pid,base,size = cold_start(win,progress=progress)
+        except OSError as error:raise RuntimeError('Cold start: could not restart Steam with the desktop user') from error
+    else:pid, base, size = win.find(args.pid)
     if progress: progress(15)
     access = 0x410 | (0x28 if args.apply else 0)
     handle = win.open(access, False, pid)
     if not handle: raise C.WinError(C.get_last_error())
     try:
         sections = list(win.code_sections(handle, base, size))
-        plan = []
-        for name, original, patched, offset in RULES:
-            hits = [(addr+p, data[p+offset:p+offset+6], False)
-                    for addr, data in sections for p in matches(data, original)]
-            hits += [(addr+p, None, True) for addr, data in sections for p in matches(data, patched)]
-            if len(hits) != 1:
-                raise RuntimeError('%s: expected exactly one match, got %d; no writes started.' % (name, len(hits)))
-            address, before, done = hits[0]
-            print('%s at 0x%x: %s' % (name, address, 'already patched' if done else 'matched'))
-            if not done: plan.append((address+offset, before, replacement(before)))
+        plan,allocations,hook_site = prepare_patch_plan(win,handle,sections,base,
+            silent=args.silent,selected=args.account,apply=args.apply)
         if not args.apply:
             print('Read-only scan complete. Use --apply to write the verified patch plan.')
             return
         changed = []
+        hook_published = False
         try:
             for address, before, after in plan:
-                if win.read(handle, address, 6) != before:
+                if win.read(handle, address, len(before)) != before:
                     raise RuntimeError('Target bytes changed since scan')
                 changed.append((address, before))
+                if address==hook_site:hook_published = True
                 win.write(handle, address, after)
-                if win.read(handle, address, 6) != after:
+                if win.read(handle, address, len(after)) != after:
                     raise RuntimeError('Patch verification failed')
         except Exception:
             for address, before in reversed(changed):
                 try: win.write(handle, address, before)
                 except Exception as error: print('Rollback failed:', error)
+            if not hook_published:
+                for allocation in allocations:win.free(handle,allocation)
             raise
         print('Applied %d memory changes.' % len(changed))
         if progress: progress(30)
@@ -252,6 +408,25 @@ def main(argv=None, progress=None):
         return pid
     finally:
         win.close(handle)
+
+def main(argv=None, progress=None):
+    import sys
+    values = list(sys.argv[1:] if argv is None else argv)
+    if '--legacy' in values:
+        values.remove('--legacy')
+        return legacy_main(values, progress=progress)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--apply', action='store_true', help='Load and configure the native module')
+    parser.add_argument('--silent', action='store_true', help='Filter all game-status records')
+    parser.add_argument('--cold-start', action='store_true', help='Gracefully restart Steam before loading the module')
+    args = parser.parse_args(values)
+    if os.name != 'nt' or C.sizeof(C.c_void_p) != 8:
+        parser.error('Requires Windows and 64-bit Python')
+    if not args.apply:
+        parser.error('Use --apply to load the module; no changes were made')
+    from steambpf_module import run
+    return run(silent=args.silent, cold=args.cold_start, progress=progress)
+
 
 if __name__ == '__main__':
     try: main()

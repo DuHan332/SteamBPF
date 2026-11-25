@@ -6,7 +6,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-import steambpf
+import steambpf_module
 
 BG='#0b1016'; PANEL='#101923'; EDGE='#263645'; TEXT='#d9e5ef'; MUTED='#728899'; CYAN='#62ddd2'; AMBER='#f7b955'; RED='#e94d44'
 
@@ -47,7 +47,7 @@ def create_window():
     launch_label=text(236,305,'执 行',22,'#fff5eb',anchor='center',font='Microsoft YaHei',tags='launch')
     text(236,335,'EXECUTE',10,'#ffd2c5',anchor='center',tags='launch')
     text(480,151,'02   执行步骤',10,MUTED)
-    phases=['定位与检查','应用本地补丁','断线 / 重新上线','完成']
+    phases=['定位与检查','加载功能模块','配置功能','完成']
     dots=[];labels=[]
     for i,name in enumerate(phases):
         y=195+i*46
@@ -62,6 +62,16 @@ def create_window():
         x=48+i*16.6
         c.create_rectangle(x,466,x+12,478,fill='#23313d',outline='',tags='track')
     bars=[c.create_rectangle(48+i*16.6,466,60+i*16.6,478,fill=CYAN,outline='',state='hidden') for i in range(40)]
+    silent_mode=tk.BooleanVar(value=False)
+    silent_input=tk.Checkbutton(root,variable=silent_mode,text='全游戏静默',bg=BG,fg=TEXT,
+                               selectcolor=PANEL,activebackground=BG,activeforeground=CYAN,
+                               font=('Microsoft YaHei',10),highlightthickness=0,bd=0)
+    c.create_window(440,94,window=silent_input,anchor='w')
+    cold_mode=tk.BooleanVar(value=False)
+    cold_input=tk.Checkbutton(root,variable=cold_mode,text='冷启动（重启 Steam）',bg=BG,fg=TEXT,
+                             selectcolor=PANEL,activebackground=BG,activeforeground=CYAN,
+                             font=('Microsoft YaHei',10),highlightthickness=0,bd=0)
+    c.create_window(215,94,window=cold_input,anchor='w')
     translations = {
         '01   操作控制': ('01   操作控制', '01   CONTROL'),
         '一键执行 · 自动刷新': ('一键执行 · 自动刷新', 'One click / automatic refresh'),
@@ -69,18 +79,25 @@ def create_window():
         'EXECUTE': ('一键操作', 'EXECUTE'),
         '02   执行步骤': ('02   执行步骤', '02   WORKFLOW'),
         '定位与检查': ('定位与检查', 'Locate & check'),
-        '应用本地补丁': ('应用本地补丁', 'Apply patch'),
-        '断线 / 重新上线': ('断线 / 重新上线', 'Reconnect'),
+        '加载功能模块': ('加载功能模块', 'Load module'),
+        '配置功能': ('配置功能', 'Configure'),
         '完成': ('完成', 'Complete'),
         'ready': ('就绪 · 请先启动 Steam，然后点击执行', 'Ready / Start Steam, then click RUN'),
         'running': ('正在执行本地操作…', 'Running local operations...'),
-        'success': ('执行完成 · 已调用上线与打开库', 'Complete / Online and library commands sent'),
+        'success': ('执行完成 · 功能已启用', 'Complete / Features enabled'),
         'missing': ('未找到 Steam · 请先启动 Steam 后重试', 'Steam not found / Start Steam and retry'),
-        'mismatch': ('版本不匹配 · 补丁未执行', 'Version mismatch / Patch not applied'),
+        'mismatch': ('版本不匹配 · 功能未启用', 'Version mismatch / Features not enabled'),
         'connection': ('连接处理失败 · 请检查权限后重试', 'Connection step failed / Check permissions'),
         'error': ('执行失败 · 请确认 Steam 已启动并允许管理员权限', 'Failed / Start Steam and allow administrator access'),
         'closing': ('正在执行 · 请等待完成后关闭', 'In progress / Please wait before closing'),
         'busy': ('执行中', 'BUSY'),
+        'silent_ready': ('已选择全游戏静默 · 点击执行应用', 'Silent start selected / Click RUN to apply'),
+        'unsupported': ('检测到其他补丁 · 请重启 Steam 后重试', 'Other patch detected / Restart Steam and retry'),
+        'cold_ready': ('已选择冷启动 · 执行时会重启 Steam', 'Cold start selected / RUN will restart Steam'),
+        'cold_failed': ('冷启动未完成 · 请先关闭游戏和 Steam 后重试', 'Cold start failed / Close games and Steam, then retry'),
+        'cold_first': ('启动与检查', 'Start & check'),
+        'cold_running': ('正在重启 Steam 并加载模块…', 'Restarting Steam and loading module...'),
+        'module_failed': ('模块加载或配置失败 · 请重启 Steam 后重试', 'Module failed / Restart Steam and retry'),
     }
     language=[0]
     state_key=['ready']
@@ -96,7 +113,24 @@ def create_window():
         c.itemconfigure(launch_label,text=translations['busy' if running[0] else '执 行'][language[0]])
         c.itemconfigure(status,text=translations[state_key[0]][language[0]])
         c.itemconfigure(language_label,text='中文  /  EN' if language[0]==0 else 'EN  /  中文')
+        if cold_mode.get():c.itemconfigure(labels[0],text=translations['cold_first'][language[0]])
+        silent_input.configure(text='全游戏静默' if language[0]==0 else 'Silent mode')
+        cold_input.configure(text='冷启动（重启 Steam）' if language[0]==0 else 'Cold start (restart Steam)')
         root.title('SteamBPF')
+    def select_silent(value=None):
+        if running[0]:return
+        if value is not None:silent_mode.set(bool(value))
+        state_key[0]='silent_ready' if silent_mode.get() else 'ready'
+        set_progress(0)
+        c.itemconfigure(status,fill=TEXT)
+        render_language()
+    silent_input.configure(command=select_silent)
+    def select_cold(value=None):
+        if running[0]:return
+        if value is not None:cold_mode.set(bool(value))
+        state_key[0]='cold_ready' if cold_mode.get() else 'ready'
+        set_progress(0);render_language()
+    cold_input.configure(command=select_cold)
     def switch_language(event=None):
         language[0]=1-language[0]
         render_language()
@@ -107,26 +141,33 @@ def create_window():
         value=max(0,min(100,float(value)))
         c.itemconfigure(percent,text='%03d%%'%value)
         for i,b in enumerate(bars):c.itemconfigure(b,state='normal' if i<round(value*.4) else 'hidden')
-        stage=0 if value<15 else 1 if value<30 else 2 if value<100 else 3
+        stage=0 if value<20 else 1 if value<80 else 2 if value<100 else 3
         for i in range(4):
             c.itemconfigure(dots[i],fill=CYAN if i<=stage else '#273744')
             c.itemconfigure(labels[i],fill=TEXT if i<=stage else MUTED)
     def start(event=None):
         if running[0]:return
+        silent=silent_mode.get()
+        restart=cold_mode.get()
         running[0]=True;set_progress(0)
         c.itemconfigure(disk,fill='#983c37',outline='#cd6856')
-        state_key[0]='running'
+        state_key[0]='cold_running' if cold_mode.get() else 'running'
+        silent_input.configure(state='disabled');cold_input.configure(state='disabled')
         render_language()
         c.itemconfigure(status,fill=AMBER)
         def work():
             try:
                 with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
-                    steambpf.main(['--apply','--refresh','tcp'],progress=lambda v:events.put(('progress',v)))
+                    steambpf_module.run(silent=silent,cold=restart,
+                                        progress=lambda v:events.put(('progress',v)))
                 events.put(('success','success'))
             except BaseException as error:
                 detail=str(error)
-                if 'Expected one Steam' in detail or 'not loaded' in detail:message='missing'
+                if 'Cold start' in detail:message='cold_failed'
+                elif 'Expected one Steam' in detail or 'not loaded' in detail:message='missing'
+                elif 'Unsupported silent' in detail:message='unsupported'
                 elif 'match' in detail:message='mismatch'
+                elif 'Module:' in detail:message='module_failed'
                 elif 'No TCP disconnect' in detail:message='connection'
                 else:message='error'
                 events.put(('error',message))
@@ -145,6 +186,8 @@ def create_window():
             except queue.Empty:break
             if kind=='progress':set_progress(value);continue
             running[0]=False
+            cold_input.configure(state='normal')
+            silent_input.configure(state='normal')
             c.itemconfigure(disk,fill=RED,outline='#ff8472')
             state_key[0]=value
             render_language()
@@ -163,6 +206,10 @@ def create_window():
     # Expose minimal view hooks for offline UI verification.
     root.launch_action=start
     root.switch_language=switch_language
+    root.select_silent=select_silent
+    root.select_cold=select_cold
+    root.silent_option=silent_input
+    root.cold_option=cold_input
     root.console_canvas=c
     root.progress_text_id=percent
     root.status_text_id=status

@@ -6,6 +6,9 @@
 
 # Local packaging dependencies; restore using requirements-build.txt.
 /packaging/build-tools/
+/packaging/native-tools/
+/native/bin/
+/native/vendor/minhook/.git/
 
 # Python bytecode and local environments.
 __pycache__/

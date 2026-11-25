@@ -5,6 +5,7 @@
 - Windows x64.
 - 64-bit Python 3. The local packaging tools were installed using Python 3.12.
 - PyInstaller and its dependencies in `packaging/build-tools/`.
+- Zig 0.13.0 in `packaging/native-tools/ziglang/` for the x64 native module.
 
 ## Build command
 
@@ -12,6 +13,7 @@ Generated files and local packaging dependencies are excluded from Git. After cl
 
 ```powershell
 python -m pip install --target packaging/build-tools -r packaging/requirements-build.txt
+python -m pip install --target packaging/native-tools ziglang==0.13.0
 ```
 
 Run from the project directory:
@@ -26,11 +28,17 @@ The script first looks for the existing Codex Python runtime on this machine, th
 .\build.ps1 -PythonExe 'C:\Python312\python.exe'
 ```
 
-Output: `dist/SteamBPF.exe`. The executable uses a windowed interface and requests administrator privileges at startup.
+The build first compiles `native/module.cpp` and the vendored MinHook sources, runs the native protocol tests, and writes a payload hash manifest. Output: `dist/SteamBPF.exe`. The executable uses a windowed interface and requests administrator privileges at startup. Its bundled module is cached under `%LOCALAPPDATA%/SteamBPF/modules/<sha256>/` at runtime so that a loaded DLL outlives the packaging extraction directory.
 
 ## Build inputs
 
-- `steambpf.py`: core logic.
+- `steambpf.py`: shared Windows helpers, CLI, and explicit legacy backend.
+- `steambpf_module.py`: module injection, bounded local pipe requests, and configuration.
+- `native/module.cpp`, `native/wire.hpp`: independent module and protocol filtering.
+- `native/vendor/minhook/`: MinHook 1.3.4 sources and license.
+- `native/build.ps1`, `native/wire_tests.cpp`: native build and offline tests.
+- `steambpf_accounts.py`: local account labels and legacy account-filter code generation.
+- `steambpf_startup.py`: graceful Steam restart using the desktop user's token.
 - `steambpf_gui.py`: graphical interface and translations.
 - `packaging/build-tools/`: PyInstaller and dependencies.
 - `build.ps1`: packaging script.
